@@ -135,10 +135,10 @@ struct SuspendCrossingInfo {
 
     BasicBlock *UseBB = I->getParent();
 
-    // As a special case, treat uses by an llvm.coro.suspend.retcon
-    // as if they were uses in the suspend's single predecessor: the
-    // uses conceptually occur before the suspend.
-    if (isa<CoroSuspendRetconInst>(I)) {
+    // As a special case, treat uses by an llvm.coro.suspend.retcon or an
+    // llvm.coro.suspend.async as if they were uses in the suspend's single
+    // predecessor: the uses conceptually occur before the suspend.
+    if (isa<CoroSuspendRetconInst>(I) || isa<CoroSuspendAsyncInst>(I)) {
       UseBB = UseBB->getSinglePredecessor();
       assert(UseBB && "should have split coro.suspend into its own block");
     }
@@ -766,6 +766,18 @@ static StructType *buildFrameType(Function &F, coro::Shape &Shape,
     Shape.RetconLowering.IsFrameInlineInStorage
       = (B.getStructSize() <= Id->getStorageSize() &&
          B.getStructAlign() <= Id->getStorageAlignment());
+    break;
+  }
+  case coro::ABI::Async: {
+    Shape.AsyncLowering.frameOffset =
+        alignTo(Shape.AsyncLowering.contextHeaderSize, Shape.FrameAlign);
+    Shape.AsyncLowering.contextSize =
+        Shape.AsyncLowering.frameOffset + Shape.FrameSize;
+    if (Shape.AsyncLowering.getContextAlignment() < Shape.FrameAlign) {
+      report_fatal_error(
+          "The alignment requirment of frame variables cannot be higher than "
+          "the alignment of the async function context");
+    }
     break;
   }
   }

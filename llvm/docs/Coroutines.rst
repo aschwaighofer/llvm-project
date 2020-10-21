@@ -174,6 +174,61 @@ This may be acceptable if LLVM's coroutine support is primarily being
 used for low-level lowering and inlining is expected to be applied
 earlier in the pipeline.
 
+Async Lowering
+--------------
+
+In async-continuation lowering, signaled by the use of `llvm.coro.id.async`,
+handling of control-flow must be handled explicitly by the frontend.
+
+In this lowering, a coroutine is assumed to take the current `async context` as
+its first argument. It is used to marshal arguments and return values of the
+coroutine. Therefore a async coroutine returns `void`.
+
+.. code-block:: llvm
+  define swiftcc void @async_coroutine(i8* %async.ctxt, i8*, i8*) {
+  }
+
+
+Every suspend point takes an `async context` argument which provides the context
+and the coroutine frame of the callee function. Every
+suspend point has an associated `resume function` denoted by the
+`llvm.coro.async.resume` intrinsic. The coroutine is resumed by
+calling this `resume function` passing the `async context` as the first
+argument. It is assumed that the `resume function` can restore its (the
+caller's) `async context` by loading the first field in the `async context`.
+
+.. code-block:: c
+
+  struct async_context {
+    struct async_context *caller_context;
+    ...
+  }
+
+The frontend should provide a `async function pointer` struct associated with
+each async coroutine by `llvm.coro.id.async`'s argument. The initial size and
+alignment of the `async context` must be provided as arguments to the
+`llvm.coro.id.async` intrinsic. Lowering will update the size entry with the
+coroutine frame  requirements. The frontend is responsible for allocating the
+memory for the `async context` but can use the `async function pointer` struct
+to obtain the required size.
+
+.. code-block:: c
+  struct async_function_pointer {
+    uint32_t context_size;
+    uint32_t relative_function_pointer_to_async_impl;
+  }
+
+Lowering will split an async coroutine into a ramp function and one resume
+function per suspend point.
+
+How control-flow is passed between caller, suspension point, and back to
+resume function is left up to the frontend.
+
+The suspend point takes a function and its arguments. The function is intended
+to model the transfer to the callee function. It will be tail called by
+lowering and therefore must have the same signature and calling convention as
+the async coroutine.
+
 Coroutines by Example
 =====================
 

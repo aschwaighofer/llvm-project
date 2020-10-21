@@ -81,6 +81,11 @@ enum class ABI {
   /// suspend at most once during its execution, and the return value of
   /// the continuation is void.
   RetconOnce,
+
+  /// The "async continuation" lowering, where each suspend point creates a
+  /// single continuation function. The continuation function is available as an
+  /// intrinsic.
+  Async,
 };
 
 // Holds structural Coroutine Intrinsics for a particular function and other
@@ -133,9 +138,22 @@ struct LLVM_LIBRARY_VISIBILITY Shape {
     bool IsFrameInlineInStorage;
   };
 
+  struct AsyncLoweringStorage {
+    FunctionType *asyncFuncTy;
+    Value *context;
+    uint64_t contextHeaderSize;
+    uint64_t contextAlignment;
+    uint64_t frameOffset; // Start of the frame.
+    uint64_t contextSize; // Includes frame size.
+    GlobalVariable *asyncFuncPointer;
+
+    Align getContextAlignment() const { return Align(contextAlignment); }
+  };
+
   union {
     SwitchLoweringStorage SwitchLowering;
     RetconLoweringStorage RetconLowering;
+    AsyncLoweringStorage AsyncLowering;
   };
 
   CoroIdInst *getSwitchCoroId() const {
@@ -147,6 +165,11 @@ struct LLVM_LIBRARY_VISIBILITY Shape {
     assert(ABI == coro::ABI::Retcon ||
            ABI == coro::ABI::RetconOnce);
     return cast<AnyCoroIdRetconInst>(CoroBegin->getId());
+  }
+
+  CoroIdAsyncInst *getAsyncCoroId() const {
+    assert(ABI == coro::ABI::Async);
+    return cast<CoroIdAsyncInst>(CoroBegin->getId());
   }
 
   unsigned getSwitchIndexField() const {
@@ -178,7 +201,10 @@ struct LLVM_LIBRARY_VISIBILITY Shape {
     case coro::ABI::Retcon:
     case coro::ABI::RetconOnce:
       return RetconLowering.ResumePrototype->getFunctionType();
+    case coro::ABI::Async:
+      return AsyncLowering.asyncFuncTy;
     }
+
     llvm_unreachable("Unknown coro::ABI enum");
   }
 
@@ -212,6 +238,8 @@ struct LLVM_LIBRARY_VISIBILITY Shape {
     case coro::ABI::Retcon:
     case coro::ABI::RetconOnce:
       return RetconLowering.ResumePrototype->getCallingConv();
+    case coro::ABI::Async:
+      return CallingConv::Swift;
     }
     llvm_unreachable("Unknown coro::ABI enum");
   }
