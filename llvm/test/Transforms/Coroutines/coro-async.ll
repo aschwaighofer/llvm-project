@@ -26,15 +26,6 @@ declare void @my_other_async_function(i8* %async.ctxt)
 
 ; Function that implements the dispatch to the callee function.
 define swiftcc void @my_async_function.my_other_async_function_fp.apply(i8* %async.ctxt, %async.task* %task, %async.actor* %actor) {
-
-  ; if (%actor  != %target.actor) {
-  ;   %task->resumeFromSuspension = my_other_async_function_fp.2 ;
-  ;   %task->suspendedContext=%async.ctxt;
-  ;   tail call swift_asyncSuspend(%actor, %target.actor, %task)
-  ; } else {
-  ;   tail call @my_other_async_function_fp.2(%async.ctxt, %actor, task%)
-  ; }
-
   musttail call swiftcc void @asyncSuspend(i8* %async.ctxt, %async.task* %task, %async.actor* %actor)
   ret void
 }
@@ -70,27 +61,13 @@ entry:
                                                   void (i8*, %async.task*, %async.actor*)* @my_async_function.my_other_async_function_fp.apply,
                                                   i8* %callee_context, %async.task* %task, %async.actor *%actor)
 
-  ; new semantics with hop_to_executor after return and on entry of function.
-  ; if (executor != expected executor) goto suspend
-
-  ; resume.partial.function:
-  ; implicit %callee_context_2 = %arg0 of @resume.my_async_function(i8*, ...)
-  ; implicit %async.ctxt = load (gep 0, 0, %callee_context_2)
-  ; %callee_context = %callee_context_2
-  ; load results
-  ; deallocate callee context
   call void @llvm.coro.async.context.dealloc(i8* %callee_context)
   %continuation_task_arg = extractvalue {i8*, i8*, i8*} %res, 1
   %task.2 =  bitcast i8* %continuation_task_arg to %async.task*
-  ; probably need something to make sure that this is the last call.
+
   tail call swiftcc void @asyncReturn(i8* %async.ctxt, %async.task* %task.2, %async.actor* %actor)
   call i1 @llvm.coro.end(i8* %hdl, i1 0)
   unreachable
-
-  ; suspend:
-  ; tail call void @supendForExecutor(child_context, task, actor)
-  ; call i1 @llvm.coro.end(i8* %hdl, i1 0)
-  ; unreachable
 }
 
 ; CHECK: define internal swiftcc void @my_async_function.resume.0
