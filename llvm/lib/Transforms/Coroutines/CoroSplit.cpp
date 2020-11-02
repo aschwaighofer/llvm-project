@@ -654,23 +654,26 @@ Value *CoroCloner::deriveNewFramePointer() {
   // In switch-lowering, the argument is the frame pointer.
   case coro::ABI::Switch:
     return &*NewF->arg_begin();
+  // In async-lowering, the first argument is an async context. We can
+  // retrieve the async context of the resume function from the async context
+  // projection function associated with the active suspend. The frame is
+  // located as a tail to the async context header.
   case coro::ABI::Async: {
     auto *CalleeContext = &*NewF->arg_begin();
     auto *FramePtrTy = Shape.FrameTy->getPointerTo();
-    // The caller context is assumed to be stored at the begining of the callee
-    // context.
-    // struct async_context {
-    //    struct async_context *caller;
-    //    ...
-    auto &Context = Builder.getContext();
-    auto *Int8PtrPtrTy = Type::getInt8PtrTy(Context)->getPointerTo();
-    auto *CallerContextAddr =
-        Builder.CreateBitOrPointerCast(CalleeContext, Int8PtrPtrTy);
-    auto *CallerContext = Builder.CreateLoad(CallerContextAddr);
+    auto *ProjectionFunc = cast<CoroSuspendAsyncInst>(ActiveSuspend)
+                               ->getAsyncContextProjectionFunction();
+    // Calling i8* (i8*)
+    auto *CallerContext = Builder.CreateCall(
+        cast<FunctionType>(ProjectionFunc->getType()->getPointerElementType()),
+        ProjectionFunc, CalleeContext);
+    CallerContext->setCallingConv(ProjectionFunc->getCallingConv());
     // The frame is located after the async_context header.
+    auto &Context = Builder.getContext();
     auto *FramePtrAddr = Builder.CreateConstInBoundsGEP1_32(
         Type::getInt8Ty(Context), CallerContext,
         Shape.AsyncLowering.FrameOffset, "async.ctx.frameptr");
+
     return Builder.CreateBitCast(FramePtrAddr, FramePtrTy);
   }
   // In continuation-lowering, the argument is the opaque storage.
@@ -976,7 +979,6 @@ static void postSplitCleanup(Function &F) {
   FPM.add(createCFGSimplificationPass());
   FPM.add(createEarlyCSEPass());
   FPM.add(createCFGSimplificationPass());
-
   FPM.doInitialization();
   FPM.run(F);
   FPM.doFinalization();
@@ -1671,7 +1673,7 @@ static void updateCallGraphAfterCoroutineSplit(
 // When we see the coroutine the first time, we insert an indirect call to a
 // devirt trigger function and mark the coroutine that it is now ready for
 // split.
-static void prepareForSplit(Function &F, CallGraph &CG) {
+static void prepareForSplit(Function &F, CallGraph &CG, bool isAsync = false) {
   Module &M = *F.getParent();
   LLVMContext &Context = F.getContext();
 #ifndef NDEBUG
@@ -1679,7 +1681,8 @@ static void prepareForSplit(Function &F, CallGraph &CG) {
   assert(DevirtFn && "coro.devirt.trigger function not found");
 #endif
 
-  F.addFnAttr(CORO_PRESPLIT_ATTR, PREPARED_FOR_SPLIT);
+  F.addFnAttr(CORO_PRESPLIT_ATTR,
+              isAsync ? ASYNC_RESTART_AFTER_SPLIT : PREPARED_FOR_SPLIT);
 
   // Insert an indirect call sequence that will be devirtualized by CoroElide
   // pass:
@@ -1687,7 +1690,9 @@ static void prepareForSplit(Function &F, CallGraph &CG) {
   //    %1 = bitcast i8* %0 to void(i8*)*
   //    call void %1(i8* null)
   coro::LowererBase Lowerer(M);
-  Instruction *InsertPt = F.getEntryBlock().getTerminator();
+  Instruction *InsertPt =
+      isAsync ? F.getEntryBlock().getFirstNonPHIOrDbgOrLifetime()
+              : F.getEntryBlock().getTerminator();
   auto *Null = ConstantPointerNull::get(Type::getInt8PtrTy(Context));
   auto *DevirtFnAddr =
       Lowerer.makeSubFnCall(Null, CoroSubFnInst::RestartTrigger, InsertPt);
@@ -1911,6 +1916,13 @@ PreservedAnalyses CoroSplitPass::run(LazyCallGraph::SCC &C,
     SmallVector<Function *, 4> Clones;
     const coro::Shape Shape = splitCoroutine(F, Clones, ReuseFrameSlot);
     updateCallGraphAfterCoroutineSplit(*N, Shape, Clones, C, CG, AM, UR, FAM);
+
+    if (Shape.ABI == coro::ABI::Async &&
+        !Shape.CoroSuspends.empty()) {
+      // We want the inliner to be run on the newly inserted functions.
+      UR.CWorklist.insert(&C);
+    }
+
   }
 
   if (PrepareFn)
@@ -1980,6 +1992,12 @@ struct CoroSplitLegacy : public CallGraphSCCPass {
       StringRef Value = Attr.getValueAsString();
       LLVM_DEBUG(dbgs() << "CoroSplit: Processing coroutine '" << F->getName()
                         << "' state: " << Value << "\n");
+      // Async lowering marks coroutines to trigger a restart of the pipeline
+      // after it has split them.
+      if (Value == ASYNC_RESTART_AFTER_SPLIT) {
+        F->removeFnAttr(CORO_PRESPLIT_ATTR);
+        continue;
+      }
       if (Value == UNPREPARED_FOR_SPLIT) {
         prepareForSplit(*F, CG);
         continue;
@@ -1989,6 +2007,12 @@ struct CoroSplitLegacy : public CallGraphSCCPass {
       SmallVector<Function *, 4> Clones;
       const coro::Shape Shape = splitCoroutine(*F, Clones, ReuseFrameSlot);
       updateCallGraphAfterCoroutineSplit(*F, Shape, Clones, CG, SCC);
+      if (Shape.ABI == coro::ABI::Async) {
+        // Restart SCC passes.
+        // Mark function for CoroElide pass. It will devirtualize causing a
+        // restart of the SCC pipeline.
+        prepareForSplit(*F, CG, true);
+      }
     }
 
     if (PrepareFn)

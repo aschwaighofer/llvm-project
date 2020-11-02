@@ -35,13 +35,23 @@ define swiftcc void @my_async_function.my_other_async_function_fp.apply(i8* %asy
 declare void @some_user(i64)
 declare void @some_may_write(i64*)
 
+define i8* @resume_context_projection(i8* %ctxt) {
+entry:
+  %resume_ctxt_addr = bitcast i8* %ctxt to i8**
+  %resume_ctxt = load i8*, i8** %resume_ctxt_addr, align 8
+  ret i8* %resume_ctxt
+}
+
+
 define swiftcc void @my_async_function(i8* %async.ctxt, %async.task* %task, %async.actor* %actor)  {
 entry:
   %tmp = alloca { i64, i64 }, align 8
   %proj.1 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %tmp, i64 0, i32 0
   %proj.2 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %tmp, i64 0, i32 1
 
-  %id = call token @llvm.coro.id.async(i32 128, i32 16, i8* %async.ctxt, i8* bitcast (<{i32, i32}>* @my_async_function_fp to i8*))
+  %id = call token @llvm.coro.id.async(i32 128, i32 16,
+          i8* %async.ctxt,
+          i8* bitcast (<{i32, i32}>* @my_async_function_fp to i8*))
   %hdl = call i8* @llvm.coro.begin(token %id, i8* null)
   store i64 0, i64* %proj.1, align 8
   store i64 1, i64* %proj.2, align 8
@@ -66,10 +76,10 @@ entry:
   ; store caller context into callee context
   %callee_context.caller_context.addr = getelementptr inbounds %async.ctxt, %async.ctxt* %callee_context.0, i32 0, i32 0
   store i8* %async.ctxt, i8** %callee_context.caller_context.addr
-
+  %resume_proj_fun = bitcast i8*(i8*)* @resume_context_projection to i8*
   %res = call {i8*, i8*, i8*} (i8*, i8*, ...) @llvm.coro.suspend.async(
                                                   i8* %resume.func_ptr,
-                                                  i8* %callee_context,
+                                                  i8* %resume_proj_fun,
                                                   void (i8*, %async.task*, %async.actor*)* @my_async_function.my_other_async_function_fp.apply,
                                                   i8* %callee_context, %async.task* %task, %async.actor *%actor)
 
@@ -115,11 +125,11 @@ entry:
 ; CHECK:   store i8* bitcast (void (i8*, i8*, i8*)* @my_async_function.resume.0 to i8*), i8** [[RETURN_TO_CALLER_ADDR]]
 ; CHECK:   [[CALLER_CONTEXT_ADDR:%.*]] = bitcast i8* [[CALLEE_CTXT]] to i8**
 ; CHECK:   store i8* %async.ctxt, i8** [[CALLER_CONTEXT_ADDR]]
-; CHECK:   musttail call swiftcc void @my_async_function.my_other_async_function_fp.apply(i8* [[CALLEE_CTXT]], %async.task* %task, %async.actor* %actor)
+; CHECK:   musttail call swiftcc void @asyncSuspend(i8* [[CALLEE_CTXT]], %async.task* %task, %async.actor* %actor)
 ; CHECK:   ret void
 ; CHECK: }
 
-; CHECK-LABEL: define internal swiftcc void @my_async_function.resume.0(i8* %0, i8* %1, i8* %2) {
+; CHECK-LABEL: define internal swiftcc void @my_async_function.resume.0(i8* nocapture readonly %0, i8* %1, i8* nocapture readnone %2) {
 ; CHECK: entryresume.0:
 ; CHECK:   [[CALLER_CONTEXT_ADDR:%.*]] = bitcast i8* %0 to i8**
 ; CHECK:   [[CALLER_CONTEXT:%.*]] = load i8*, i8** [[CALLER_CONTEXT_ADDR]]
@@ -130,7 +140,7 @@ entry:
 ; CHECK:   [[ACTOR_RELOAD_ADDR:%.*]] = getelementptr inbounds i8, i8* [[CALLER_CONTEXT]], i64 152
 ; CHECK:   [[CAST2:%.*]] = bitcast i8* [[ACTOR_RELOAD_ADDR]] to %async.actor**
 ; CHECK:   [[ACTOR_RELOAD:%.*]] = load %async.actor*, %async.actor** [[CAST2]]
-; CHECK:   [[ADDR1:%.*]] = getelementptr inbounds i8, i8* %4, i64 144
+; CHECK:   [[ADDR1:%.*]] = getelementptr inbounds i8, i8* [[CALLER_CONTEXT]], i64 144
 ; CHECK:   [[ASYNC_CTXT_RELOAD_ADDR:%.*]] = bitcast i8* [[ADDR1]] to i8**
 ; CHECK:   [[ASYNC_CTXT_RELOAD:%.*]] = load i8*, i8** [[ASYNC_CTXT_RELOAD_ADDR]]
 ; CHECK:   [[ALLOCA_PRJ2:%.*]] = getelementptr inbounds i8, i8* [[CALLER_CONTEXT]], i64 136
@@ -173,9 +183,10 @@ entry:
   store i8* %resume.func_ptr, i8** %return_to_caller.addr
   %callee_context.caller_context.addr = getelementptr inbounds %async.ctxt, %async.ctxt* %callee_context.0, i32 0, i32 0
   store i8* %async.ctxt, i8** %callee_context.caller_context.addr
+  %resume_proj_fun = bitcast i8*(i8*)* @resume_context_projection to i8*
   %res = call {i8*, i8*, i8*} (i8*, i8*, ...) @llvm.coro.suspend.async(
                                                   i8* %resume.func_ptr,
-                                                  i8* %callee_context,
+                                                  i8* %resume_proj_fun,
                                                   void (i8*, %async.task*, %async.actor*)* @my_async_function.my_other_async_function_fp.apply,
                                                   i8* %callee_context, %async.task* %task, %async.actor *%actor)
 
@@ -189,9 +200,10 @@ entry:
   store i8* %resume.func_ptr.1, i8** %return_to_caller.addr.1
   %callee_context.caller_context.addr.1 = getelementptr inbounds %async.ctxt, %async.ctxt* %callee_context.0.1, i32 0, i32 0
   store i8* %async.ctxt, i8** %callee_context.caller_context.addr.1
+  %resume_proj_fun.2 = bitcast i8*(i8*)* @resume_context_projection to i8*
   %res.2 = call {i8*, i8*, i8*} (i8*, i8*, ...) @llvm.coro.suspend.async(
                                                   i8* %resume.func_ptr.1,
-                                                  i8* %callee_context,
+                                                  i8* %resume_proj_fun.2,
                                                   void (i8*, %async.task*, %async.actor*)* @my_async_function.my_other_async_function_fp.apply,
                                                   i8* %callee_context, %async.task* %task, %async.actor *%actor)
 
@@ -212,20 +224,20 @@ entry:
 ; CHECK: store i8* [[CALLEE_CTXT]],
 ; CHECK: store i8* bitcast (void (i8*, i8*, i8*)* @my_async_function2.resume.0 to i8*),
 ; CHECK: store i8* %async.ctxt,
-; CHECK: musttail call swiftcc void @my_async_function.my_other_async_function_fp.apply(i8* [[CALLEE_CTXT]], %async.task* %task, %async.actor* %actor)
+; CHECK: musttail call swiftcc void @asyncSuspend(i8* [[CALLEE_CTXT]], %async.task* %task, %async.actor* %actor)
 ; CHECK: ret void
 
-; CHECK-LABEL: define internal swiftcc void @my_async_function2.resume.0(i8* %0, i8* %1, i8* %2) {
+; CHECK-LABEL: define internal swiftcc void @my_async_function2.resume.0(i8* nocapture readonly %0, i8* %1, i8* nocapture readnone %2) {
 ; CHECK: [[CALLEE_CTXT_ADDR:%.*]] = bitcast i8* %0 to i8**
 ; CHECK: [[CALLEE_CTXT:%.*]] = load i8*, i8** [[CALLEE_CTXT_ADDR]]
 ; CHECK: [[CALLEE_CTXT_SPILL_ADDR:%.*]] = getelementptr inbounds i8, i8* [[CALLEE_CTXT]], i64 152
 ; CHECK: [[CALLEE_CTXT_SPILL_ADDR2:%.*]] = bitcast i8* [[CALLEE_CTXT_SPILL_ADDR]] to i8**
 ; CHECK: store i8* bitcast (void (i8*, i8*, i8*)* @my_async_function2.resume.1 to i8*),
 ; CHECK: [[CALLLE_CTXT_RELOAD:%.*]] = load i8*, i8** [[CALLEE_CTXT_SPILL_ADDR2]]
-; CHECK: musttail call swiftcc void @my_async_function.my_other_async_function_fp.apply(i8* [[CALLEE_CTXT_RELOAD]]
+; CHECK: musttail call swiftcc void @asyncSuspend(i8* [[CALLEE_CTXT_RELOAD]]
 ; CHECK: ret void
 
-; CHECK-LABEL: define internal swiftcc void @my_async_function2.resume.1(i8* %0, i8* %1, i8* %2) {
+; CHECK-LABEL: define internal swiftcc void @my_async_function2.resume.1(i8* nocapture readonly %0, i8* nocapture readnone %1, i8* %2) {
 ; CHECK: [[ACTOR_ARG:%.*]] = bitcast i8* %2
 ; CHECK: tail call swiftcc void @asyncReturn({{.*}}[[ACTOR_ARG]])
 ; CHECK: ret void

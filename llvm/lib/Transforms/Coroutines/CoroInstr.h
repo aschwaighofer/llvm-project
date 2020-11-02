@@ -504,11 +504,15 @@ inline CoroSaveInst *AnyCoroSuspendInst::getCoroSave() const {
 
 /// This represents the llvm.coro.suspend.async instruction.
 class LLVM_LIBRARY_VISIBILITY CoroSuspendAsyncInst : public AnyCoroSuspendInst {
-  enum { ResumeFunctionArg, AsyncContextArg, MustTailCallFuncArg };
+  enum { ResumeFunctionArg, AsyncContextProjectionArg, MustTailCallFuncArg };
 
 public:
-  Value *getAsyncContext() const {
-    return getArgOperand(AsyncContextArg)->stripPointerCasts();
+
+  void checkWellFormed() const;
+
+  Function *getAsyncContextProjectionFunction() const {
+    return cast<Function>(
+        getArgOperand(AsyncContextProjectionArg)->stripPointerCasts());
   }
 
   CoroAsyncResumeInst *getResumeFunction() const {

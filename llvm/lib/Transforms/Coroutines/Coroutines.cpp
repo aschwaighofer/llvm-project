@@ -276,6 +276,7 @@ void coro::Shape::buildFrom(Function &F) {
         break;
       case Intrinsic::coro_suspend_async: {
         auto *Suspend = cast<CoroSuspendAsyncInst>(II);
+        Suspend->checkWellFormed();
         CoroSuspends.push_back(Suspend);
         break;
       }
@@ -686,6 +687,22 @@ void CoroIdAsyncInst::checkWellFormed() const {
   checkConstantInt(this, getArgOperand(AlignArg),
                    "alignment argument to coro.id.async must be constant");
   checkAsyncFuncPointer(this, getArgOperand(AsyncFuncPtrArg));
+}
+
+static void checkAsyncContextProjectFunction(const Instruction *I, Function *F) {
+  auto *FunTy = cast<FunctionType>(F->getType()->getPointerElementType());
+  if (!FunTy->getReturnType()->isPointerTy() ||
+      !FunTy->getReturnType()->getPointerElementType()->isIntegerTy(8))
+    fail(I, "llvm.coro.suspend.async resume function projection function must "
+            "return an i8* type", F);
+  if (FunTy->getNumParams() != 1 || !FunTy->getParamType(0)->isPointerTy() ||
+      !FunTy->getParamType(0)->getPointerElementType()->isIntegerTy(8))
+    fail(I, "llvm.coro.suspend.async resume function projection function must "
+            "take one i8* type as parameter", F);
+}
+
+void CoroSuspendAsyncInst::checkWellFormed() const {
+  checkAsyncContextProjectFunction(this, getAsyncContextProjectionFunction());
 }
 
 void LLVMAddCoroEarlyPass(LLVMPassManagerRef PM) {
