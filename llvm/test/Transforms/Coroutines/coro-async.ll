@@ -242,6 +242,20 @@ entry:
 ; CHECK: tail call swiftcc void @asyncReturn({{.*}}[[ACTOR_ARG]])
 ; CHECK: ret void
 
+define swiftcc void @top_level_caller(i8* %ctxt, i8* %task, i8* %actor) {
+  %prepare = call i8* @llvm.coro.prepare.async(i8* bitcast (void (i8*, %async.task*,  %async.actor*)* @my_async_function to i8*))
+  %f = bitcast i8* %prepare to void (i8*, i8*, i8*)*
+  call swiftcc void %f(i8* %ctxt, i8* %task, i8* %actor)
+  ret void
+}
+
+; CHECK-LABEL: define swiftcc void @top_level_caller(i8* %ctxt, i8* %task, i8* %actor)
+; CHECK: store i8* bitcast (void (i8*, i8*, i8*)* @my_async_function.resume.0
+; CHECK: store i8* %ctxt
+; CHECK: tail call swiftcc void @asyncSuspend
+; CHECK: ret void
+
+declare i8* @llvm.coro.prepare.async(i8*)
 declare token @llvm.coro.id.async(i32, i32, i8*, i8*)
 declare i8* @llvm.coro.begin(token, i8*)
 declare i1 @llvm.coro.end(i8*, i1)

@@ -1854,8 +1854,17 @@ static bool replaceAllPrepares(Function *PrepareFn, CallGraph &CG) {
 }
 
 static bool declaresCoroSplitIntrinsics(const Module &M) {
-  return coro::declaresIntrinsics(
-      M, {"llvm.coro.begin", "llvm.coro.prepare.retcon"});
+  return coro::declaresIntrinsics(M, {"llvm.coro.begin",
+                                      "llvm.coro.prepare.retcon",
+                                      "llvm.coro.prepare.async"});
+}
+
+static void addPrepareFunction(const Module &M,
+                               SmallVectorImpl<Function *> &Fns,
+                               StringRef Name) {
+  auto *PrepareFn = M.getFunction(Name);
+  if (PrepareFn && !PrepareFn->use_empty())
+    Fns.push_back(PrepareFn);
 }
 
 PreservedAnalyses CoroSplitPass::run(LazyCallGraph::SCC &C,
@@ -1871,10 +1880,10 @@ PreservedAnalyses CoroSplitPass::run(LazyCallGraph::SCC &C,
   if (!declaresCoroSplitIntrinsics(M))
     return PreservedAnalyses::all();
 
-  // Check for uses of llvm.coro.prepare.retcon.
-  auto *PrepareFn = M.getFunction("llvm.coro.prepare.retcon");
-  if (PrepareFn && PrepareFn->use_empty())
-    PrepareFn = nullptr;
+  // Check for uses of llvm.coro.prepare.retcon/async.
+  SmallVector<Function *, 2> PrepareFns;
+  addPrepareFunction(M, PrepareFns, "llvm.coro.prepare.retcon");
+  addPrepareFunction(M, PrepareFns, "llvm.coro.prepare.async");
 
   // Find coroutines for processing.
   SmallVector<LazyCallGraph::Node *, 4> Coroutines;
@@ -1882,11 +1891,14 @@ PreservedAnalyses CoroSplitPass::run(LazyCallGraph::SCC &C,
     if (N.getFunction().hasFnAttribute(CORO_PRESPLIT_ATTR))
       Coroutines.push_back(&N);
 
-  if (Coroutines.empty() && !PrepareFn)
+  if (Coroutines.empty() && PrepareFns.empty())
     return PreservedAnalyses::all();
 
-  if (Coroutines.empty())
-    replaceAllPrepares(PrepareFn, CG, C);
+  if (Coroutines.empty()) {
+    for (auto PrepareFn: PrepareFns) {
+      replaceAllPrepares(PrepareFn, CG, C);
+    }
+  }
 
   // Split all the coroutines.
   for (LazyCallGraph::Node *N : Coroutines) {
@@ -1925,8 +1937,11 @@ PreservedAnalyses CoroSplitPass::run(LazyCallGraph::SCC &C,
 
   }
 
-  if (PrepareFn)
-    replaceAllPrepares(PrepareFn, CG, C);
+  if (!PrepareFns.empty()) {
+    for (auto PrepareFn: PrepareFns) {
+      replaceAllPrepares(PrepareFn, CG, C);
+    }
+  }
 
   return PreservedAnalyses::none();
 }
@@ -1964,10 +1979,11 @@ struct CoroSplitLegacy : public CallGraphSCCPass {
       return false;
 
     // Check for uses of llvm.coro.prepare.retcon.
-    auto PrepareFn =
-      SCC.getCallGraph().getModule().getFunction("llvm.coro.prepare.retcon");
-    if (PrepareFn && PrepareFn->use_empty())
-      PrepareFn = nullptr;
+    SmallVector<Function *, 2> PrepareFns;
+    auto &M = SCC.getCallGraph().getModule();
+    addPrepareFunction(M, PrepareFns, "llvm.coro.prepare.retcon");
+    addPrepareFunction(M, PrepareFns, "llvm.coro.prepare.async");
+
 
     // Find coroutines for processing.
     SmallVector<Function *, 4> Coroutines;
@@ -1976,13 +1992,17 @@ struct CoroSplitLegacy : public CallGraphSCCPass {
         if (F->hasFnAttribute(CORO_PRESPLIT_ATTR))
           Coroutines.push_back(F);
 
-    if (Coroutines.empty() && !PrepareFn)
+    if (Coroutines.empty() && PrepareFns.empty())
       return false;
 
     CallGraph &CG = getAnalysis<CallGraphWrapperPass>().getCallGraph();
 
-    if (Coroutines.empty())
-      return replaceAllPrepares(PrepareFn, CG);
+    if (Coroutines.empty()) {
+      bool Changed = false;
+      for (auto *PrepareFn: PrepareFns)
+        Changed |= replaceAllPrepares(PrepareFn, CG);
+      return Changed;
+    }
 
     createDevirtTriggerFunc(CG, SCC);
 
@@ -2015,7 +2035,7 @@ struct CoroSplitLegacy : public CallGraphSCCPass {
       }
     }
 
-    if (PrepareFn)
+    for (auto *PrepareFn : PrepareFns)
       replaceAllPrepares(PrepareFn, CG);
 
     return true;
