@@ -314,6 +314,56 @@ entry:
   call i1 @llvm.coro.end(i8* %hdl, i1 0)
   unreachable
 }
+@promote_escape_only_fp = constant <{ i32, i32 }>
+  <{ i32 trunc ( ; Relative pointer to async function
+       i64 sub (
+         i64 ptrtoint (void (i8*, %async.task*, %async.actor*)* @my_async_function to i64),
+         i64 ptrtoint (i32* getelementptr inbounds (<{ i32, i32 }>, <{ i32, i32 }>* @promote_escape_only_fp, i32 0, i32 1) to i64)
+       )
+     to i32),
+     i32 128    ; Initial async context size without space for frame
+}>
+
+
+declare void @escape(i64*)
+
+define swiftcc void @promote_escape_only(i8* swiftasync %async.ctxt, %async.task* %task, %async.actor* %actor)  {
+entry:
+  %tmp = alloca i64
+
+  %id = call token @llvm.coro.id.async(i32 128, i32 16, i32 0,
+          i8* bitcast (<{i32, i32}>* @promote_escape_only_fp to i8*))
+  %hdl = call i8* @llvm.coro.begin(token %id, i8* null)
+  store i64 0, i64* %tmp, align 8
+  call void @escape(i64* %tmp)
+
+  %arg0 = bitcast %async.task* %task to i8*
+  %arg1 = bitcast <{ i32, i32}>* @my_other_async_function_fp to i8*
+  %callee_context = call i8* @llvm.coro.async.context.alloc(i8* %arg0, i8* %arg1)
+	%callee_context.0 = bitcast i8* %callee_context to %async.ctxt*
+
+  ; store the return continuation
+  %callee_context.return_to_caller.addr = getelementptr inbounds %async.ctxt, %async.ctxt* %callee_context.0, i32 0, i32 1
+  %return_to_caller.addr = bitcast void(i8*, %async.task*, %async.actor*)** %callee_context.return_to_caller.addr to i8**
+  %resume.func_ptr = call i8* @llvm.coro.async.resume()
+  store i8* %resume.func_ptr, i8** %return_to_caller.addr
+
+  ; store caller context into callee context
+  %callee_context.caller_context.addr = getelementptr inbounds %async.ctxt, %async.ctxt* %callee_context.0, i32 0, i32 0
+  store i8* %async.ctxt, i8** %callee_context.caller_context.addr
+  %resume_proj_fun = bitcast i8*(i8*)* @resume_context_projection to i8*
+  %callee = bitcast void(i8*, %async.task*, %async.actor*)* @asyncSuspend to i8*
+  %res = call {i8*, i8*, i8*} (i8*, i8*, ...) @llvm.coro.suspend.async(
+                                                  i8* %resume.func_ptr,
+                                                  i8* %resume_proj_fun,
+                                                  void (i8*, i8*, %async.task*, %async.actor*)* @my_async_function.my_other_async_function_fp.apply,
+                                                  i8* %callee, i8* %callee_context, %async.task* %task, %async.actor *%actor)
+
+  call void @llvm.coro.async.context.dealloc(i8* %callee_context)
+  tail call swiftcc void @asyncReturn(i8* %async.ctxt, %async.task* %task, %async.actor* %actor)
+  call i1 @llvm.coro.end(i8* %hdl, i1 0)
+  unreachable
+}
 declare i8* @llvm.coro.prepare.async(i8*)
 declare token @llvm.coro.id.async(i32, i32, i32, i8*)
 declare i8* @llvm.coro.begin(token, i8*)

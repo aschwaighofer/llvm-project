@@ -20,6 +20,7 @@
 #include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/Analysis/PtrUseVisitor.h"
+#include "llvm/Analysis/ValueTracking.h"
 #include "llvm/Config/llvm-config.h"
 #include "llvm/IR/CFG.h"
 #include "llvm/IR/DIBuilder.h"
@@ -298,6 +299,7 @@ public:
   Spill(Value *Def, llvm::User *U) : Def(Def), User(cast<Instruction>(U)) {}
 
   Value *def() const { return Def; }
+  bool isEscapeEntry() const { return User == Def; }
   Instruction *user() const { return User; }
   BasicBlock *userBlock() const { return User->getParent(); }
 
@@ -874,6 +876,10 @@ static Instruction *insertSpills(const SpillInfo &Spills, coro::Shape &Shape) {
         Builder.CreateStore(CurrentValue, G);
       }
     }
+    // If this is the spill entry noting that the alloca's address has escaped
+    // continue with the next entry.
+    if (E.isEscapeEntry())
+      continue;
 
     // If we have not seen the use block, generate a reload in it.
     if (CurrentBlock != E.userBlock()) {
@@ -1696,6 +1702,51 @@ void coro::salvageDebugInfo(
   DDI->setOperand(2, MetadataAsValue::get(VMContext, Expr));
 }
 
+/// Find if the instruction is an Alloca whose address has escaped.
+/// 'Escaping' here means any instruction that an analysis of users determines
+/// as endpoints (e.g loads/stores). We have to consider a general GEP
+/// instruction as an escape as the later analyses does not recursively walk GEP
+/// users when it determines which values are live accross suspend points.
+static bool isEscapingAlloca(const Instruction *I) {
+  auto AI = dyn_cast<AllocaInst>(I);
+  if (!AI)
+    return false;
+
+  for (const User *U : AI->users()) {
+    if (const auto *LI = dyn_cast<LoadInst>(U))
+      continue;
+    else if (const auto *SI = dyn_cast<StoreInst>(U)) {
+      if (SI->getValueOperand() != AI)
+        continue;
+      // Escape of the address.
+      return true;
+    } else if (const auto *II = dyn_cast<IntrinsicInst>(U)) {
+      if (II->isLifetimeStartOrEnd())
+        continue;
+      // Unknown use.
+      return true;
+    } else if (const auto *BCI = dyn_cast<BitCastInst>(U)) {
+      if (BCI->getType() ==
+              Type::getInt8PtrTy(U->getContext(),
+                                 AI->getType()->getAddressSpace()) &&
+          onlyUsedByLifetimeMarkers(BCI))
+        continue;
+      // Not a lifetime use.
+      return true;
+    } else if (const auto *GEP = dyn_cast<GetElementPtrInst>(U)) {
+      if (GEP->getType() ==
+              Type::getInt8PtrTy(U->getContext(),
+                                 AI->getType()->getAddressSpace()) &&
+          GEP->hasAllZeroIndices() && onlyUsedByLifetimeMarkers(GEP))
+        continue;
+      // Not a lifetime use.
+      return true;
+    }
+    // All other instruction uses potentially escape the address.
+    return true;
+  }
+  return false;
+}
 void coro::buildCoroutineFrame(Function &F, Shape &Shape) {
   eliminateSwiftError(F, Shape);
 
@@ -1728,6 +1779,7 @@ void coro::buildCoroutineFrame(Function &F, Shape &Shape) {
   SpillInfo Spills;
   SmallVector<CoroAllocaAllocInst*, 4> LocalAllocas;
   SmallVector<Instruction*, 4> DeadInstructions;
+
 
   for (int Repeat = 0; Repeat < 4; ++Repeat) {
     // See if there are materializable instructions across suspend points.
@@ -1811,6 +1863,12 @@ void coro::buildCoroutineFrame(Function &F, Shape &Shape) {
     }
 
     auto Iter = LifetimeMap.find(&I);
+    // If an alloca escapes we can't in general know its uses after the suspend
+    // point so we need to spill it to the frame.
+    if (isEscapingAlloca(&I)) {
+      Spills.emplace_back(&I, &I);
+    }
+
     for (User *U : I.users()) {
       bool NeedSpill = false;
 
