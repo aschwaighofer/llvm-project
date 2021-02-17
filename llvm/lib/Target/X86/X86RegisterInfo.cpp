@@ -376,17 +376,21 @@ X86RegisterInfo::getCalleeSavedRegs(const MachineFunction *MF) const {
   }
 
   if (Is64Bit) {
+    bool isSwiftTailCC = CC == CallingConv::SwiftTail;
+
     bool IsSwiftCC = Subtarget.getTargetLowering()->supportSwiftError() &&
                      F.getAttributes().hasAttrSomewhere(Attribute::SwiftError);
     if (IsSwiftCC)
-      return IsWin64 ? CSR_Win64_SwiftError_SaveList
-                     : CSR_64_SwiftError_SaveList;
+      return IsWin64
+                 ? CSR_Win64_SwiftError_SaveList
+                 : ((!isSwiftTailCC) ? CSR_64_SwiftError_SaveList
+                                     : CSR_64_SwiftError_SwiftAsync_SaveList);
 
     if (IsWin64)
       return HasSSE ? CSR_Win64_SaveList : CSR_Win64_NoSSE_SaveList;
     if (CallsEHReturn)
       return CSR_64EHRet_SaveList;
-    return CSR_64_SaveList;
+    return (!isSwiftTailCC) ? CSR_64_SaveList : CSR_64_SwiftAsync_SaveList;
   }
 
   return CallsEHReturn ? CSR_32EHRet_SaveList : CSR_32_SaveList;
@@ -493,11 +497,16 @@ X86RegisterInfo::getCallPreservedMask(const MachineFunction &MF,
   // callsEHReturn().
   if (Is64Bit) {
     const Function &F = MF.getFunction();
+    bool isSwiftTailCC = CC == CallingConv::SwiftTail;
     bool IsSwiftCC = Subtarget.getTargetLowering()->supportSwiftError() &&
                      F.getAttributes().hasAttrSomewhere(Attribute::SwiftError);
     if (IsSwiftCC)
-      return IsWin64 ? CSR_Win64_SwiftError_RegMask : CSR_64_SwiftError_RegMask;
-    return IsWin64 ? CSR_Win64_RegMask : CSR_64_RegMask;
+      return IsWin64         ? CSR_Win64_SwiftError_RegMask
+             : (isSwiftTailCC ? CSR_64_SwiftError_SwiftAsync_RegMask
+                             : CSR_64_SwiftError_RegMask);
+    return IsWin64
+               ? CSR_Win64_RegMask
+               : (isSwiftTailCC ? CSR_64_SwiftAsync_RegMask : CSR_64_RegMask);
   }
 
   return CSR_32_RegMask;
