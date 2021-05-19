@@ -649,10 +649,10 @@ void CoroCloner::replaceSwiftErrorOps() {
   ::replaceSwiftErrorOps(*NewF, Shape, &VMap);
 }
 
-void CoroCloner::salvageDebugInfo() {
+static void salvageCoroDebugInfo(llvm::Function &NewF, coro::Shape &Shape) {
   SmallVector<DbgVariableIntrinsic *, 8> Worklist;
   SmallDenseMap<llvm::Value *, llvm::AllocaInst *, 4> DbgPtrAllocaCache;
-  for (auto &BB : *NewF)
+  for (auto &BB : NewF)
     for (auto &I : BB)
       if (auto *DVI = dyn_cast<DbgVariableIntrinsic>(&I))
         Worklist.push_back(DVI);
@@ -663,7 +663,7 @@ void CoroCloner::salvageDebugInfo() {
   // either unreachable or stale due to the CoroSplit transformation.
   DominatorTree DomTree(*NewF);
   auto IsUnreachableBlock = [&](BasicBlock *BB) {
-    return !isPotentiallyReachable(&NewF->getEntryBlock(), BB, nullptr,
+    return !isPotentiallyReachable(&NewF.getEntryBlock(), BB, nullptr,
                                    &DomTree);
   };
   for (DbgVariableIntrinsic *DVI : Worklist) {
@@ -1002,7 +1002,7 @@ void CoroCloner::create() {
   replaceCoroEnds();
 
   // Salvage debug info that points into the coroutine frame.
-  salvageDebugInfo();
+  salvageCoroDebugInfo(*NewF, Shape);
 
   // Eliminate coro.free from the clones, replacing it with 'null' in cleanup,
   // to suppress deallocation code.
@@ -1819,6 +1819,9 @@ static coro::Shape splitCoroutine(Function &F,
   // Replace all the swifterror operations in the original function.
   // This invalidates SwiftErrorOps in the Shape.
   replaceSwiftErrorOps(F, Shape, nullptr);
+
+  // Salvage debug info that points into the coroutine frame.
+  salvageCoroDebugInfo(F, Shape);
 
   return Shape;
 }
