@@ -2479,7 +2479,11 @@ void coro::salvageDebugInfo(
       Storage = GEPInst->getOperand(0);
     } else if (auto *BCInst = dyn_cast<llvm::BitCastInst>(Storage))
       Storage = BCInst->getOperand(0);
-    else
+    else if (auto *Phi = dyn_cast<PHINode>(Storage)) {
+      if (Phi->getNumIncomingValues() != 1)
+        return;
+      Storage = Phi->getIncomingValue(0);
+    } else
       break;
   }
   if (!Storage)
