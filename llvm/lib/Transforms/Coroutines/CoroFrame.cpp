@@ -2492,25 +2492,32 @@ void coro::salvageDebugInfo(
   //
   // Avoid to create the alloca would be eliminated by optimization
   // passes and the corresponding dbg.declares would be invalid.
-  if (!ReuseFrameSlot && !EnableReuseStorageInFrame)
+  if (!ReuseFrameSlot && !EnableReuseStorageInFrame) {
     if (auto *Arg = dyn_cast<llvm::Argument>(Storage)) {
-      auto &Cached = DbgPtrAllocaCache[Storage];
-      if (!Cached) {
-        Cached = Builder.CreateAlloca(Storage->getType(), 0, nullptr,
-                                      Arg->getName() + ".debug");
-        Builder.CreateStore(Storage, Cached);
+      if (Arg->getParent()->hasParamAttribute(Arg->getArgNo(),
+                                              Attribute::SwiftAsync)) {
+        // Swift async arguments will be lowered to entry values by the
+        // backend. Don't stash them in an alloca.
+      } else {
+        auto &Cached = DbgPtrAllocaCache[Storage];
+        if (!Cached) {
+          Cached = Builder.CreateAlloca(Storage->getType(), 0, nullptr,
+                                        Arg->getName() + ".debug");
+          Builder.CreateStore(Storage, Cached);
+        }
+        Storage = Cached;
+        // FIXME: LLVM lacks nuanced semantics to differentiate between
+        // memory and direct locations at the IR level. The backend will
+        // turn a dbg.declare(alloca, ..., DIExpression()) into a memory
+        // location. Thus, if there are deref and offset operations in the
+        // expression, we need to add a DW_OP_deref at the *start* of the
+        // expression to first load the contents of the alloca before
+        // adjusting it with the expression.
+        if (Expr && Expr->isComplex())
+          Expr = DIExpression::prepend(Expr, DIExpression::DerefBefore);
       }
-      Storage = Cached;
-      // FIXME: LLVM lacks nuanced semantics to differentiate between
-      // memory and direct locations at the IR level. The backend will
-      // turn a dbg.declare(alloca, ..., DIExpression()) into a memory
-      // location. Thus, if there are deref and offset operations in the
-      // expression, we need to add a DW_OP_deref at the *start* of the
-      // expression to first load the contents of the alloca before
-      // adjusting it with the expression.
-      if (Expr && Expr->isComplex())
-        Expr = DIExpression::prepend(Expr, DIExpression::DerefBefore);
     }
+  }
 
   DVI->replaceVariableLocationOp(OriginalStorage, Storage);
   DVI->setExpression(Expr);
