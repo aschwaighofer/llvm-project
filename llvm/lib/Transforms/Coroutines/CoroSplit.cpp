@@ -819,6 +819,13 @@ static void addFramePointerAttrs(AttributeList &Attrs, LLVMContext &Context,
   Attrs = Attrs.addParamAttributes(Context, ParamIndex, ParamAttrs);
 }
 
+static void addAsyncContextAttrs(AttributeList &Attrs, LLVMContext &Context,
+                                 unsigned ParamIndex) {
+  AttrBuilder ParamAttrs;
+  ParamAttrs.addAttribute(Attribute::SwiftAsync);
+  Attrs = Attrs.addParamAttributes(Context, ParamIndex, ParamAttrs);
+}
+
 /// Clone the body of the original function into a resume function of
 /// some sort.
 void CoroCloner::create() {
@@ -935,6 +942,10 @@ void CoroCloner::create() {
   // Don't change returns to unreachable because that will trip up the verifier.
   // These returns should be unreachable from the clone.
   case coro::ABI::Async:
+    if (OrigF.hasParamAttribute(Shape.AsyncLowering.ContextArgNo,
+                                Attribute::SwiftAsync)) {
+      addAsyncContextAttrs(NewAttrs, Context, Shape.AsyncLowering.ContextArgNo);
+    }
     break;
   }
 
