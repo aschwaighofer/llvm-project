@@ -17,8 +17,10 @@
 ; an entry value in the backend.
 
 ; CHECK: define internal swiftcc void @"$s1a1fyS2iYF.resume.0"(i8* %0, i8* %1, i8* swiftasync %2)
-; CHECK-NOT: ret void
-; CHECK:   call void @llvm.dbg.declare(metadata i8* %2, metadata !41, metadata !DIExpression(DW_OP_plus_uconst, 64, DW_OP_plus_uconst, 24))
+; CHECK: entryresume.0:
+; CHECK-NEXT:   %async.ctx.frameptr1 = getelementptr inbounds i8, i8* %2, i32 64
+; CHECK-NEXT:   call void @llvm.dbg.declare(metadata i8* %2, metadata ![[X:[0-9]+]], metadata !DIExpression(DW_OP_plus_uconst, 64, DW_OP_plus_uconst, 24))
+; CHECK: ![[X]] = !DILocalVariable(name: "x",
 
 source_filename = "/tmp/a.ll"
 target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128"
