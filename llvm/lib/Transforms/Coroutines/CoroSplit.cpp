@@ -941,12 +941,14 @@ void CoroCloner::create() {
   // followed by a return.
   // Don't change returns to unreachable because that will trip up the verifier.
   // These returns should be unreachable from the clone.
-  case coro::ABI::Async:
-    if (OrigF.hasParamAttribute(Shape.AsyncLowering.ContextArgNo,
-                                Attribute::SwiftAsync)) {
-      addAsyncContextAttrs(NewAttrs, Context, Shape.AsyncLowering.ContextArgNo);
+  case coro::ABI::Async: {
+    auto *ActiveAsyncSuspend = cast<CoroSuspendAsyncInst>(ActiveSuspend);
+    auto ContextArgIndex = ActiveAsyncSuspend->getStorageArgumentIndex();
+    if (OrigF.hasParamAttribute(ContextArgIndex, Attribute::SwiftAsync)) {
+      addAsyncContextAttrs(NewAttrs, Context, ContextArgIndex);
     }
     break;
+  }
   }
 
   NewF->setAttributes(NewAttrs);
