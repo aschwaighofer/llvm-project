@@ -661,7 +661,7 @@ static void salvageCoroDebugInfo(llvm::Function &NewF, coro::Shape &Shape) {
 
   // Remove all salvaged dbg.declare intrinsics that became
   // either unreachable or stale due to the CoroSplit transformation.
-  DominatorTree DomTree(*NewF);
+  DominatorTree DomTree(NewF);
   auto IsUnreachableBlock = [&](BasicBlock *BB) {
     return !isPotentiallyReachable(&NewF.getEntryBlock(), BB, nullptr,
                                    &DomTree);
